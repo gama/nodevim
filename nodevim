@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# adapted from https://stackoverflow.com/a/43677273
+
+set -eu
+
+write_rlwrap_filter() {
+	echo "INFO: creating rlwrap filter at \"${RLWRAP_FILTER_PATH}\"" 1>&2
+	mkdir -p "${RLWRAP_FILTERDIR}"
+	cat > "${RLWRAP_FILTER_PATH}" <<- 'EOF'
+		#!/usr/bin/env perl
+		
+		use lib ($ENV{RLWRAP_FILTERDIR} or ".");
+		use lib ("/usr/share/rlwrap/filters");
+		use RlwrapFilter;
+		use strict;
+		
+		my $filter = new RlwrapFilter;
+		
+		$filter -> completion_handler(sub {
+		  my($line, $prefix, @completions) = @_;
+		  my $command = "rlwrap_complete('$prefix')";
+		  my $completion_list = $filter -> cloak_and_dagger($command, "> ", 0.1); # read until we see a new prompt "> "
+		  my @new_completions =  grep /^$prefix/, split /\r\n/, $completion_list; # split on CRNL and weed out rubbish
+		  return (@completions, @new_completions);                                                  
+		});
+		
+		$filter -> run;
+		EOF
+	chmod u+x "${RLWRAP_FILTER_PATH}"
+}
+
+SCRIPT_PATH=$(readlink -f "${BASH_SOURCE[0]}")
+RLWRAP_FILTERDIR="${XDG_DATA_HOME:-${HOME}/.local/share/rlwrap/filters}"
+RLWRAP_FILTER_PATH="${RLWRAP_FILTERDIR}/node_complete"
+
+# create/update rlwrap filter if it the "nodevim" script is newer
+[ "${SCRIPT_PATH}" -nt "${RLWRAP_FILTER_PATH}" ] && write_rlwrap_filter
+
+export RLWRAP_FILTERDIR
+exec rlwrap -e '' -c -z node_complete node --eval '
+// terminal:false disables readline (just like env NODE_NO_READLINE=1): 
+var myrepl = require("repl").start({terminal:false}); 
+
+// add REPL command rlwrap_complete(prefix) that prints a simple list of completions of prefix
+myrepl.context["rlwrap_complete"] =  function(prefix) {
+  myrepl.complete(prefix, function(err,data) { for (x of data[0]) {console.log(x)}});
+}
+'
